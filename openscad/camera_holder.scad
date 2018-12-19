@@ -117,7 +117,26 @@ module neopixel_adapter(h=8){
         cylinder(d=10,h=999,center=true);
     }
 }
+module neopixel_clamp(h=3){
+    // This bolts onto the end of the tube and mounts a neopixel (from a strip)
+    // a piece of paper can be added between the adapter and the camera tube.
+    // this diffuses the light, ensures RGB come from the same solid angle, 
+    // and reduces the intensity considerably
+    difference(){
+        union(){
+            hull(){
+                // tube to provide some clearance from the LED
+                cylinder(r=7,h=h);
+                // lugs to add a clamp (at some later point)
+                reflect([1,0,0]) translate([8,0,0]) cylinder(d=6,h=h);
+            }
+        } 
+        //holes to clamp the LED
+        reflect([1,0,0]) translate([8,0,-1]) cylinder(d=3.5,h=999); 
+    }
+}
 
 //mirror([0,0,1]) illumination_tube();
-neopixel_adapter();
+//neopixel_adapter();
+neopixel_clamp();
                 
