@@ -141,7 +141,7 @@ if __name__ == "__main__":
 
         camera.start_preview()
         
-        f, ax = cr.measure_response(camera, led, output_dir + "test_lst")
+        f, ax = cr.measure_response(camera, led, os.path.join(output_dir, "test_lst"))
         plt.savefig(os.path.join(output_dir, "preview.pdf"))
 
         lst = camera.lens_shading_table
