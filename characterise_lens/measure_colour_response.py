@@ -29,7 +29,13 @@ def rgb_image(camera, resize=None, **kwargs):
         camera.capture(output, format='rgb', resize=resize, **kwargs)
         return output.array
 
-if __name__ == "__main__":
+def flat_lens_shading_table(camera):
+    """Return a flat (i.e. unity gain) lens shading table.
+    
+    This is mostly useful because it makes it easy to get the size
+    of the array correct.  NB if you are not using the forked picamera
+    library (with lens shading table support) it will raise an error.
+    """
     print("Checking for lens shading support...", end="")
     if not hasattr(PiCamera, "lens_shading_table"):
         print("not present.")
@@ -38,59 +44,88 @@ if __name__ == "__main__":
         print("present")
 
     print("Generating a flat lens shading table")
+    
+    lens_shading_table = np.zeros(camera._lens_shading_table_shape(), dtype=np.uint8) + 32
+    return lens_shading_table
+
+def auto_expose_to_white(camera, led):
+    """Freeze the settings after auto-exposing to white illumination"""
+    print("Turning on the LED and letting the camera auto-expose", end="")
+    led.set_rgb(255,255,255)
+    camera.start_preview()
+    for i in range(6):
+        print(".", end="")
+        time.sleep(0.5)
+    print("done")
+
+    print("Freezing the camera settings...")
+    camera.shutter_speed = camera.exposure_speed
+    print("Shutter speed = {}".format(camera.shutter_speed))
+    camera.exposure_mode = "off"
+    print("Auto exposure disabled")
+    g = camera.awb_gains
+    camera.awb_mode = "off"
+    camera.awb_gains = g
+    print("Auto white balance disabled, gains are {}".format(g))
+    print("Analogue gain: {}, Digital gain: {}".format(camera.analog_gain, camera.digital_gain))
+
+    print("Adjusting shutter speed to avoid saturation", end="")
+    for i in range(3):
+        print(".", end="")
+        camera.shutter_speed = int(camera.shutter_speed * 230.0 / np.max(rgb_image(camera)))
+        time.sleep(1)
+    print("done")
+
+def save_settings(camera, output="output/camera_settings.yaml"):
+    """Save the camera settings to a YAML file"""
+    camera_settings = {k: getattr(camera, k) for k in ['analog_gain', 'digital_gain', 'shutter_speed', 'awb_gains', 'awb_mode', 'exposure_mode', 'lens_shading_table']}
+    with open(output, "w") as outfile:
+        yaml.dump(camera_settings, outfile)
+
+def restore_settings(camera, filename, ignore=[]):
+    """Load camera settings from a YAML file"""
+    with open(filename, "r") as infile:
+        settings = yaml.load(infile)
+        for k, v in settings.items():
+            if k not in ignore:
+                setattr(camera, k, v)
+
+def measure_response(camera, led, output_prefix, 
+                     rgb_values=[(255,255,255), (255,0,0), (0,255,0), (0,0,255), (0,0,0)]):
+    """Measure the camera's response to different illuminations"""
+    fig, ax = plt.subplots(4, len(rgb_values), figsize=(8,4))
+    for i, rgb in enumerate(rgb_values):
+        print("Setting illumination to {}".format(rgb))
+        led.set_rgb(*rgb)
+        time.sleep(1)
+        print("Capturing raw image")
+        camera.capture(output_prefix + "_r{}_g{}_b{}.jpg".format(*rgb), bayer=True)
+        rgb = rgb_image(camera)
+        channels = ["red", "green", "blue"]
+        for j, channel in enumerate(channels):
+            cm = LinearSegmentedColormap(channel+"map",
+                    {c: [(0,0,0),(1,1,1)] if c==channel 
+                        else [(0,0,0),(0.95,0,1),(1,1,1)] 
+                        for c in channels})
+            ax[j,i].imshow(rgb[:,:,j], vmin=0, vmax=255, cmap=cm)
+        ax[3,i].imshow(rgb[:,:,:], vmin=0, vmax=255)
+    return fig, ax
+
+if __name__ == "__main__":
+    output_dir = "output/measure_colour_response/"
+    # First turn off lens shading correction
     with PiCamera() as cam:
-        lens_shading_table = np.zeros(cam._lens_shading_table_shape(), dtype=np.uint8) + 32
-
-    with PiCamera(lens_shading_table=lens_shading_table, resolution=(640,480)) as camera, \
+        flat_lens_shading = flat_lens_shading_table(cam)
+    # Loading this lens shading table requires restarting the camera
+    with PiCamera(lens_shading_table=flat_lens_shading, resolution=(640,480)) as camera, \
          SingleNeoPixel() as led:
-        print("Turning on the LED and letting the camera auto-expose", end="")
-        led.set_rgb(255,255,255)
-        camera.start_preview()
-        for i in range(6):
-            print(".", end="")
-            time.sleep(0.5)
-        print("done")
-
-        print("Freezing the camera settings...")
-        camera.shutter_speed = camera.exposure_speed
-        print("Shutter speed = {}".format(camera.shutter_speed))
-        camera.exposure_mode = "off"
-        print("Auto exposure disabled")
-        g = camera.awb_gains
-        camera.awb_mode = "off"
-        camera.awb_gains = g
-        print("Auto white balance disabled, gains are {}".format(g))
-        print("Analogue gain: {}, Digital gain: {}".format(camera.analog_gain, camera.digital_gain))
-
-        print("Adjusting shutter speed to avoid saturation", end="")
-        for i in range(3):
-            print(".", end="")
-            camera.shutter_speed = int(camera.shutter_speed * 230.0 / np.max(rgb_image(camera)))
-            time.sleep(1)
-        print("done")
-
-        camera_settings = {k: getattr(camera, k) for k in ['analog_gain', 'digital_gain', 'shutter_speed', 'awb_gains', 'awb_mode', 'exposure_mode', 'lens_shading_table']}
-        with open("output/camera_settings.yaml", "w") as outfile:
-            yaml.dump(camera_settings, outfile)
+        # Set the camera up so white illumination doesn't saturate
+        auto_expose_to_white(camera, led)
+        save_settings(camera, output_dir + "camera_settings.yaml")
         
         print("Taking measurement")
-        fig, ax = plt.subplots(3, 4, figsize=(8,7))
-        for i, rgb in enumerate([(255,255,255), (255,0,0), (0,255,0), (0,0,255)]):
-            print("Setting illumination to {}".format(rgb))
-            led.set_rgb(*rgb)
-            time.sleep(1)
-            print("Capturing raw image")
-            camera.capture("output/capture_r{}_g{}_b{}.jpg".format(*rgb), bayer=True)
-            rgb = rgb_image(camera)
-            channels = ["red", "green", "blue"]
-            for j, channel in enumerate(channels):
-                cm = LinearSegmentedColormap(channel+"map",
-                        {c: [(0,0,0),(1,1,1)] if c==channel 
-                            else [(0,0,0),(0.95,0,1),(1,1,1)] 
-                            for c in channels})
-                ax[j,i].imshow(rgb[:,:,j], vmin=0, vmax=255, cmap=cm)
-
-        plt.savefig("output/preview.pdf")
+        fig, ax = measure_response(camera, led, output_dir + "capture")
+        plt.savefig(output_dir + "preview.pdf")
     plt.show()
 
 
